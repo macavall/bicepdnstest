@@ -1,0 +1,332 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.45.15.27210",
+      "templateHash": "6559021610825265475"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region for all resources."
+      }
+    },
+    "namePrefix": {
+      "type": "string",
+      "defaultValue": "dnsrepro",
+      "metadata": {
+        "description": "Short prefix used to derive resource names."
+      }
+    },
+    "resourceSuffix": {
+      "type": "string",
+      "defaultValue": "[uniqueString(resourceGroup().id)]",
+      "metadata": {
+        "description": "Suffix appended to resource names. Defaults to a hash of the resource group id; set explicitly (e.g. \"11762\") to reproduce fixed names."
+      }
+    },
+    "customDnsServers": {
+      "type": "array",
+      "defaultValue": [
+        "172.28.16.100",
+        "172.26.16.100"
+      ],
+      "metadata": {
+        "description": "Custom (unreachable / non-forwarding) DNS servers to force the failure, matching the customer."
+      }
+    },
+    "tags": {
+      "type": "object",
+      "defaultValue": {
+        "SecurityControl": "Ignore"
+      },
+      "metadata": {
+        "description": "Common tags applied to every resource."
+      }
+    },
+    "deployNetwork": {
+      "type": "bool",
+      "defaultValue": true,
+      "metadata": {
+        "description": "Deploy the VNet + NSG. Set false to reuse an existing network (e.g. when a residual App Service Link locks the subnet)."
+      }
+    }
+  },
+  "variables": {
+    "suffix": "[parameters('resourceSuffix')]",
+    "storageName": "[toLower(format('st{0}{1}', parameters('namePrefix'), variables('suffix')))]",
+    "vnetName": "[format('vnet-{0}-{1}', parameters('namePrefix'), variables('suffix'))]",
+    "nsgName": "[format('nsg-func-{0}-{1}', parameters('namePrefix'), variables('suffix'))]",
+    "planName": "[format('plan-{0}-{1}', parameters('namePrefix'), variables('suffix'))]",
+    "appName": "[format('func-{0}-{1}', parameters('namePrefix'), variables('suffix'))]",
+    "subnetName": "snet-func",
+    "blobDataOwnerRoleId": "b7e6dc6d-f1e8-4753-8033-0f276bb0955b",
+    "queueDataContributorRoleId": "974c5e8b-45b9-4653-ba55-5f855dd0fb88",
+    "subnetId": "[resourceId('Microsoft.Network/virtualNetworks/subnets', variables('vnetName'), variables('subnetName'))]"
+  },
+  "resources": [
+    {
+      "condition": "[parameters('deployNetwork')]",
+      "type": "Microsoft.Network/networkSecurityGroups",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('nsgName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "securityRules": [
+          {
+            "name": "allow-func-to-vnet-out",
+            "properties": {
+              "priority": 300,
+              "direction": "Outbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "VirtualNetwork",
+              "destinationPortRange": "443",
+              "description": "Allow Function App HTTPS to the VNET"
+            }
+          },
+          {
+            "name": "allow-func-to-storage-out",
+            "properties": {
+              "priority": 301,
+              "direction": "Outbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "Storage",
+              "destinationPortRange": "443",
+              "description": "Allow Function App HTTPS to Azure Storage"
+            }
+          },
+          {
+            "name": "allow-func-to-internet-saas-out",
+            "properties": {
+              "priority": 304,
+              "direction": "Outbound",
+              "access": "Allow",
+              "protocol": "Tcp",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "Internet",
+              "destinationPortRange": "443",
+              "description": "Allow Function App HTTPS egress to public SaaS"
+            }
+          },
+          {
+            "name": "moduledefault-deny-all-out",
+            "properties": {
+              "priority": 4096,
+              "direction": "Outbound",
+              "access": "Deny",
+              "protocol": "*",
+              "sourceAddressPrefix": "*",
+              "sourcePortRange": "*",
+              "destinationAddressPrefix": "*",
+              "destinationPortRange": "*",
+              "description": "Default deny-all outbound"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "condition": "[parameters('deployNetwork')]",
+      "type": "Microsoft.Network/virtualNetworks",
+      "apiVersion": "2023-11-01",
+      "name": "[variables('vnetName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "properties": {
+        "addressSpace": {
+          "addressPrefixes": [
+            "10.100.0.0/16"
+          ]
+        },
+        "dhcpOptions": {
+          "dnsServers": "[parameters('customDnsServers')]"
+        },
+        "subnets": [
+          {
+            "name": "[variables('subnetName')]",
+            "properties": {
+              "addressPrefix": "10.100.1.0/24",
+              "networkSecurityGroup": {
+                "id": "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+              },
+              "serviceEndpoints": [
+                {
+                  "service": "Microsoft.Storage"
+                }
+              ],
+              "delegations": [
+                {
+                  "name": "serverFarmDelegation",
+                  "properties": {
+                    "serviceName": "Microsoft.Web/serverFarms"
+                  }
+                }
+              ]
+            }
+          }
+        ]
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Network/networkSecurityGroups', variables('nsgName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('storageName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "minimumTlsVersion": "TLS1_2",
+        "allowBlobPublicAccess": false,
+        "supportsHttpsTrafficOnly": true
+      }
+    },
+    {
+      "type": "Microsoft.Web/serverfarms",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('planName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "sku": {
+        "tier": "ElasticPremium",
+        "name": "EP1"
+      },
+      "kind": "elastic",
+      "properties": {
+        "reserved": true,
+        "maximumElasticWorkerCount": 3
+      }
+    },
+    {
+      "type": "Microsoft.Web/sites",
+      "apiVersion": "2023-12-01",
+      "name": "[variables('appName')]",
+      "location": "[parameters('location')]",
+      "tags": "[parameters('tags')]",
+      "kind": "functionapp,linux",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "serverFarmId": "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+        "reserved": true,
+        "virtualNetworkSubnetId": "[variables('subnetId')]",
+        "siteConfig": {
+          "linuxFxVersion": "DOTNET-ISOLATED|10.0",
+          "vnetRouteAllEnabled": true,
+          "minTlsVersion": "1.2",
+          "appSettings": [
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~4"
+            },
+            {
+              "name": "FUNCTIONS_WORKER_RUNTIME",
+              "value": "dotnet-isolated"
+            },
+            {
+              "name": "AzureWebJobsStorage__accountName",
+              "value": "[variables('storageName')]"
+            },
+            {
+              "name": "AzureWebJobsStorage__blobServiceUri",
+              "value": "[format('https://{0}.blob.{1}', variables('storageName'), environment().suffixes.storage)]"
+            },
+            {
+              "name": "AzureWebJobsStorage__queueServiceUri",
+              "value": "[format('https://{0}.queue.{1}', variables('storageName'), environment().suffixes.storage)]"
+            },
+            {
+              "name": "AzureWebJobsStorage__tableServiceUri",
+              "value": "[format('https://{0}.table.{1}', variables('storageName'), environment().suffixes.storage)]"
+            },
+            {
+              "name": "WEBSITE_VNET_ROUTE_ALL",
+              "value": "1"
+            },
+            {
+              "name": "WEBSITES_ENABLE_APP_SERVICE_STORAGE",
+              "value": "true"
+            }
+          ]
+        },
+        "httpsOnly": true
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/serverfarms', variables('planName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+        "[resourceId('Microsoft.Network/virtualNetworks', variables('vnetName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), resourceId('Microsoft.Web/sites', variables('appName')), variables('blobDataOwnerRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('blobDataOwnerRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('appName')), '2023-12-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('appName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Authorization/roleAssignments",
+      "apiVersion": "2022-04-01",
+      "scope": "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]",
+      "name": "[guid(resourceId('Microsoft.Storage/storageAccounts', variables('storageName')), resourceId('Microsoft.Web/sites', variables('appName')), variables('queueDataContributorRoleId'))]",
+      "properties": {
+        "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('queueDataContributorRoleId'))]",
+        "principalId": "[reference(resourceId('Microsoft.Web/sites', variables('appName')), '2023-12-01', 'full').identity.principalId]",
+        "principalType": "ServicePrincipal"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Web/sites', variables('appName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "functionAppName": {
+      "type": "string",
+      "value": "[variables('appName')]"
+    },
+    "storageAccountName": {
+      "type": "string",
+      "value": "[variables('storageName')]"
+    },
+    "vnetName": {
+      "type": "string",
+      "value": "[variables('vnetName')]"
+    },
+    "nsgName": {
+      "type": "string",
+      "value": "[variables('nsgName')]"
+    },
+    "scmCommandUrl": {
+      "type": "string",
+      "value": "[format('https://{0}.scm.azurewebsites.net/api/command', variables('appName'))]"
+    }
+  }
+}
