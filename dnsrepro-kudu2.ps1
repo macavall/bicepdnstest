@@ -1,7 +1,15 @@
+param(
+    [Parameter(Mandatory)][string]$SubscriptionId,
+    [Parameter(Mandatory)][string]$Name
+)
 $ErrorActionPreference = 'Continue'
-$RG   = "rg-dnsrepro-11762"
-$APP  = "func-dnsrepro-11762"
-$STG  = "stdnsrepro11762"
+
+# Naming convention applied from -Name
+$RG   = "rg-$Name"
+$APP  = "func-$Name"
+$STG  = "st" + (($Name -replace '[^a-zA-Z0-9]', '').ToLower())
+
+az account set --subscription $SubscriptionId 2>$null
 
 $token = az account get-access-token --resource https://management.core.windows.net/ --query accessToken -o tsv 2>$null
 $kudu  = "https://$APP.scm.azurewebsites.net/api/command"

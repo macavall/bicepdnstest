@@ -55,27 +55,37 @@ Write-Host "== Verify DNS is blocked (in-app via Kudu) ==" -ForegroundColor Cyan
 $token = az account get-access-token --resource https://management.core.windows.net/ --query accessToken -o tsv
 $kudu  = "https://$app.scm.azurewebsites.net/api/command"
 
+# Run a single, simple command in the app container. Retries until SCM/container is ready.
 function Invoke-InApp([string]$cmd) {
     $body = @{ command = $cmd; dir = "/home" } | ConvertTo-Json
-    for ($i = 1; $i -le 10; $i++) {
+    for ($i = 1; $i -le 12; $i++) {
         try {
-            return Invoke-RestMethod -Uri $kudu -Method Post `
+            $resp = Invoke-RestMethod -Uri $kudu -Method Post `
                 -Headers @{ Authorization = "Bearer $token" } `
                 -ContentType "application/json" -Body $body -TimeoutSec 130
+            if ($resp.PSObject.Properties.Name -contains 'ExitCode') { return $resp }
         } catch {
             $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { 0 }
-            Write-Host "  SCM not ready (HTTP $code), attempt $i/10..." -ForegroundColor DarkYellow
-            Start-Sleep -Seconds 20
+            Write-Host "  SCM not ready (HTTP $code), attempt $i/12..." -ForegroundColor DarkYellow
         }
+        Start-Sleep -Seconds 20
     }
     throw "SCM did not become ready."
 }
 
-$r = Invoke-InApp "cat /etc/resolv.conf; echo ===; getent hosts $stg.blob.core.windows.net; echo getent_rc=`$?; curl -s -o /dev/null -w 'http=%{http_code}' --max-time 25 https://$stg.blob.core.windows.net/; echo \" curl_rc=`$?\""
-Write-Host $r.Output
+# Readiness probe (simple echo) before the real checks.
+$null = Invoke-InApp "echo ready"
 
-if ($r.Output -match 'getent_rc=2' -and $r.Output -match 'http=000') {
+$resolv = Invoke-InApp "cat /etc/resolv.conf"
+Write-Host "--- /etc/resolv.conf ---"
+Write-Host $resolv.Output
+
+$getent = Invoke-InApp "getent hosts $stg.blob.core.windows.net"
+Write-Host "--- getent hosts $stg.blob.core.windows.net --> ExitCode=$($getent.ExitCode) Output=[$($getent.Output.Trim())] ---"
+
+if ($getent.ExitCode -ne 0 -and [string]::IsNullOrWhiteSpace($getent.Output)) {
     Write-Host "RESULT: NON-WORKING scenario confirmed -- custom DNS is blocked (storage unresolvable)." -ForegroundColor Green
 } else {
     Write-Host "RESULT: DNS resolved -- this is NOT the blocked scenario. Check NSG/DNS config." -ForegroundColor Red
 }
+

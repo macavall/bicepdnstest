@@ -1,7 +1,16 @@
+param(
+    [Parameter(Mandatory)][string]$SubscriptionId,
+    [Parameter(Mandatory)][string]$Name
+)
 $ErrorActionPreference = 'Continue'
-$RG   = "rg-dnsrepro-11762"
-$APP  = "func-dnsrepro-11762"
+
+# Naming convention applied from -Name
+$RG   = "rg-$Name"
+$APP  = "func-$Name"
+$STG  = "st" + (($Name -replace '[^a-zA-Z0-9]', '').ToLower())
 $base = "https://$APP.azurewebsites.net"
+
+az account set --subscription $SubscriptionId 2>$null
 
 $key = $(az functionapp keys list -g $RG -n $APP --query masterKey -o tsv 2>$null)
 

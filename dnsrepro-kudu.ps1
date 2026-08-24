@@ -1,7 +1,15 @@
+param(
+    [Parameter(Mandatory)][string]$SubscriptionId,
+    [Parameter(Mandatory)][string]$Name
+)
 $ErrorActionPreference = 'Continue'
-$RG   = "rg-dnsrepro-11762"
-$APP  = "func-dnsrepro-11762"
-$STG  = "stdnsrepro11762"
+
+# Naming convention applied from -Name
+$RG   = "rg-$Name"
+$APP  = "func-$Name"
+$STG  = "st" + (($Name -replace '[^a-zA-Z0-9]', '').ToLower())
+
+az account set --subscription $SubscriptionId 2>$null
 
 # Kudu publishing credentials
 $xml = az webapp deployment list-publishing-profiles -g $RG -n $APP --xml 2>$null
